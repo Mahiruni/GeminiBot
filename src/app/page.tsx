@@ -18,9 +18,9 @@ const PAIRS: PairSymbol[] = ['XAUUSD', 'EURUSD', 'AUDUSD', 'GBPUSD'];
 export default function QuantTerminalPage() {
   const [tab, setTab] = useState<'terminal' | 'risk' | 'history' | 'settings'>('terminal');
   const [running, setRunning] = useState(true);
-  const [status, setStatus] = useState<SocketConnectionStatus>('SIMULATOR');
+  const [status, setStatus] = useState<SocketConnectionStatus>('CONNECTED');
   const [cfg, setCfg] = useState<BotConfig>({
-    ssid: '', isDemo: true, useSimulator: true, activePairs: PAIRS, selectedPair: 'XAUUSD',
+    ssid: '', isDemo: true, useSimulator: false, activePairs: PAIRS, selectedPair: 'XAUUSD',
     expirySeconds: 120, riskPercent: 1.5, fixedStakeFallback: 15, minPayoutPercent: 82,
     cooldownCandles: 3, dailyStopLossPercent: 4.5, maxConsecutiveLosses: 3, dailyTakeProfitPercent: 6.0,
   });
@@ -36,23 +36,15 @@ export default function QuantTerminalPage() {
   const cfgRef = useRef(cfg); cfgRef.current = cfg;
   const runRef = useRef(running); runRef.current = running;
 
+  // Fetch 100% REAL historical 1m candles on mount (Zero fake/random candles)
   useEffect(() => {
-    const cMap: Record<PairSymbol, Candle[]> = { XAUUSD: [], EURUSD: [], AUDUSD: [], GBPUSD: [] };
-    const dMap: Record<PairSymbol, SignalDiagnostics | null> = { XAUUSD: null, EURUSD: null, AUDUSD: null, GBPUSD: null };
-    const nowMin = Math.floor(Date.now() / 60000) * 60;
-    PAIRS.forEach((p) => {
-      let px = p === 'XAUUSD' ? 2648.5 : p === 'EURUSD' ? 1.0852 : p === 'AUDUSD' ? 0.6584 : 1.2941;
-      const step = p === 'XAUUSD' ? 0.85 : 0.00035, dec = p === 'XAUUSD' ? 2 : 5;
-      for (let i = 65; i >= 0; i--) {
-        const o = px, c = Number((o + (Math.random() - 0.495) * step).toFixed(dec));
-        const h = Number((Math.max(o, c) + Math.random() * step * 0.6).toFixed(dec));
-        const l = Number((Math.min(o, c) - Math.random() * step * 0.6).toFixed(dec));
-        cMap[p].push({ time: nowMin - i * 60, open: o, high: h, low: l, close: c });
-        px = c;
+    PAIRS.forEach(async (p) => {
+      const liveCandles = await PocketSocketClient.fetchLiveCandles(p);
+      if (liveCandles.length > 0) {
+        setCandles((prev) => ({ ...prev, [p]: liveCandles }));
+        setDiag((prev) => ({ ...prev, [p]: StrategyEngine.evaluate(p, liveCandles) }));
       }
-      dMap[p] = StrategyEngine.evaluate(p, cMap[p]);
     });
-    setCandles(cMap); setDiag(dMap);
   }, []);
 
   const execTrade = async (p: PairSymbol, dir: TradeDirection, px: number, cTime: number, pay: number) => {
@@ -94,7 +86,7 @@ export default function QuantTerminalPage() {
       });
     }, setStatus);
     wsRef.current = ws;
-    ws.connect(cfg.ssid, cfg.useSimulator);
+    ws.connect(cfg.ssid, false);
     return () => ws.disconnect();
   }, []);
 
@@ -103,19 +95,6 @@ export default function QuantTerminalPage() {
     const t = setInterval(() => setCooldown((c) => Math.max(0, c - 1)), 1000);
     return () => clearInterval(t);
   }, [cooldown]);
-
-  const onSimSweep = (dir: TradeDirection) => {
-    const p = cfg.selectedPair, list = candles[p];
-    if (list.length < 55) return;
-    const last = list[list.length - 1], step = p === 'XAUUSD' ? 2.4 : 0.0012, dec = p === 'XAUUSD' ? 2 : 5;
-    const sw: Candle = dir === 'CALL'
-      ? { ...last, low: Number((last.close - step).toFixed(dec)), close: Number((last.close + step * 0.05).toFixed(dec)) }
-      : { ...last, high: Number((last.close + step).toFixed(dec)), close: Number((last.close - step * 0.05).toFixed(dec)) };
-    const upd = [...list.slice(0, -1), sw];
-    setCandles((pr) => ({ ...pr, [p]: upd }));
-    setDiag((pr) => ({ ...pr, [p]: { ...StrategyEngine.evaluate(p, upd), signal: dir, confluenceScore: 92, checklist: { trendAligned: true, liquiditySweep: true, fvgImbalance: true, oteFibZone: true, rsiExhaustion: true, atrRegimeClean: true }, reason: `Institutional ${dir} Sweep Confirmed (92% Confluence)` } }));
-    execTrade(p, dir, sw.close, sw.time, payouts[p]);
-  };
 
   const exportCSV = async () => {
     const csv = 'ID,Pair,Dir,Stake,Payout,Profit,Status\n' + trades.map((t) => `${t.id},${t.pair},${t.direction},${t.stake},${t.payoutPercent},${t.profit},${t.status}`).join('\n');
@@ -127,10 +106,10 @@ export default function QuantTerminalPage() {
   return (
     <main className="max-w-md mx-auto min-h-screen flex flex-col px-3 pt-2.5 relative bg-obsidian-bg">
       <div className="flex-1">
-        {tab === 'terminal' && <TerminalTab selectedPair={cfg.selectedPair} onSelectPair={(p) => setCfg((pr) => ({ ...pr, selectedPair: p }))} connectionStatus={status} isBotRunning={running} onToggleBot={() => setRunning(!running)} livePayout={payouts[cfg.selectedPair]} candles={candles[cfg.selectedPair]} diagnostics={diag[cfg.selectedPair]} cooldownRemainingSeconds={cooldown} telemetry={riskRef.current.getTelemetry()} activeTrade={activeTrade} onManualExecute={(dir) => execTrade(cfg.selectedPair, dir, candles[cfg.selectedPair].slice(-1)[0]?.close ?? 1, Math.floor(Date.now() / 60000) * 60, payouts[cfg.selectedPair])} onSimulateSweep={onSimSweep} />}
+        {tab === 'terminal' && <TerminalTab selectedPair={cfg.selectedPair} onSelectPair={(p) => setCfg((pr) => ({ ...pr, selectedPair: p }))} connectionStatus={status} isBotRunning={running} onToggleBot={() => setRunning(!running)} livePayout={payouts[cfg.selectedPair]} candles={candles[cfg.selectedPair]} diagnostics={diag[cfg.selectedPair]} cooldownRemainingSeconds={cooldown} telemetry={riskRef.current.getTelemetry()} activeTrade={activeTrade} onManualExecute={(dir) => execTrade(cfg.selectedPair, dir, candles[cfg.selectedPair].slice(-1)[0]?.close ?? 1, Math.floor(Date.now() / 60000) * 60, payouts[cfg.selectedPair])} onSimulateSweep={() => {}} />}
         {tab === 'risk' && <RiskHUDTab telemetry={riskRef.current.getTelemetry()} riskPercent={cfg.riskPercent} dailyStopLossPercent={cfg.dailyStopLossPercent} dailyTakeProfitPercent={cfg.dailyTakeProfitPercent} />}
         {tab === 'history' && <TradeHistoryTab trades={trades} onExportCSV={exportCSV} />}
-        {tab === 'settings' && <SettingsTab config={cfg} onUpdateConfig={(c) => setCfg((pr) => ({ ...pr, ...c }))} onReconnect={() => wsRef.current?.connect(cfg.ssid, cfg.useSimulator)} />}
+        {tab === 'settings' && <SettingsTab config={cfg} onUpdateConfig={(c) => setCfg((pr) => ({ ...pr, ...c }))} onReconnect={() => wsRef.current?.connect(cfg.ssid, false)} />}
       </div>
       <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-obsidian-surface/95 backdrop-blur-2xl border-t border-obsidian-border px-6 py-2.5 flex justify-between items-center z-50">
         {([['terminal', Terminal, 'TERMINAL'], ['risk', Shield, 'RISK HUD'], ['history', History, 'LEDGER'], ['settings', Settings, 'SETTINGS']] as const).map(([k, Icon, lbl]) => (
