@@ -4,300 +4,140 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Terminal, Shield, History, Settings } from 'lucide-react';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
-
-import {
-  BotConfig,
-  Candle,
-  PairSymbol,
-  SignalDiagnostics,
-  SocketConnectionStatus,
-  TradeDirection,
-  TradeRecord,
-} from '@/types/bot';
+import { BotConfig, Candle, PairSymbol, SignalDiagnostics, SocketConnectionStatus, TradeDirection, TradeRecord } from '@/types/bot';
 import { StrategyEngine } from '@/lib/strategy';
 import { RiskManager } from '@/lib/riskManager';
 import { PocketSocketClient } from '@/lib/pocketSocket';
-
 import { TerminalTab } from '@/components/TerminalTab';
 import { RiskHUDTab } from '@/components/RiskHUDTab';
 import { TradeHistoryTab } from '@/components/TradeHistoryTab';
 import { SettingsTab } from '@/components/SettingsTab';
 
-const ALL_PAIRS: PairSymbol[] = ['XAUUSD', 'EURUSD', 'AUDUSD', 'GBPUSD'];
+const PAIRS: PairSymbol[] = ['XAUUSD', 'EURUSD', 'AUDUSD', 'GBPUSD'];
 
 export default function QuantTerminalPage() {
-  const [activeTab, setActiveTab] = useState<'terminal' | 'risk' | 'history' | 'settings'>('terminal');
-  const [isBotRunning, setIsBotRunning] = useState(true);
-  const [connectionStatus, setConnectionStatus] = useState<SocketConnectionStatus>('SIMULATOR');
-
-  const [config, setConfig] = useState<BotConfig>({
-    ssid: '',
-    isDemo: true,
-    useSimulator: true,
-    activePairs: ALL_PAIRS,
-    selectedPair: 'XAUUSD',
-    expirySeconds: 120,
-    riskPercent: 1.5,
-    fixedStakeFallback: 15,
-    minPayoutPercent: 82,
-    cooldownCandles: 3,
-    dailyStopLossPercent: 4.5,
-    maxConsecutiveLosses: 3,
-    dailyTakeProfitPercent: 6.0,
+  const [tab, setTab] = useState<'terminal' | 'risk' | 'history' | 'settings'>('terminal');
+  const [running, setRunning] = useState(true);
+  const [status, setStatus] = useState<SocketConnectionStatus>('SIMULATOR');
+  const [cfg, setCfg] = useState<BotConfig>({
+    ssid: '', isDemo: true, useSimulator: true, activePairs: PAIRS, selectedPair: 'XAUUSD',
+    expirySeconds: 120, riskPercent: 1.5, fixedStakeFallback: 15, minPayoutPercent: 82,
+    cooldownCandles: 3, dailyStopLossPercent: 4.5, maxConsecutiveLosses: 3, dailyTakeProfitPercent: 6.0,
   });
 
-  const [candlesMap, setCandlesMap] = useState<Record<PairSymbol, Candle[]>>({
-    XAUUSD: [],
-    EURUSD: [],
-    AUDUSD: [],
-    GBPUSD: [],
-  });
-
-  const [diagnosticsMap, setDiagnosticsMap] = useState<Record<PairSymbol, SignalDiagnostics | null>>({
-    XAUUSD: null,
-    EURUSD: null,
-    AUDUSD: null,
-    GBPUSD: null,
-  });
-
-  const [payouts, setPayouts] = useState<Record<PairSymbol, number>>({
-    XAUUSD: 92,
-    EURUSD: 88,
-    AUDUSD: 86,
-    GBPUSD: 88,
-  });
-
+  const [candles, setCandles] = useState<Record<PairSymbol, Candle[]>>({ XAUUSD: [], EURUSD: [], AUDUSD: [], GBPUSD: [] });
+  const [diag, setDiag] = useState<Record<PairSymbol, SignalDiagnostics | null>>({ XAUUSD: null, EURUSD: null, AUDUSD: null, GBPUSD: null });
+  const [payouts, setPayouts] = useState<Record<PairSymbol, number>>({ XAUUSD: 92, EURUSD: 88, AUDUSD: 86, GBPUSD: 88 });
   const [trades, setTrades] = useState<TradeRecord[]>([]);
-  const [cooldownCountdown, setCooldownCountdown] = useState(0);
+  const [cooldown, setCooldown] = useState(0);
 
-  const riskManagerRef = useRef<RiskManager>(new RiskManager(1000));
-  const socketClientRef = useRef<PocketSocketClient | null>(null);
-  const configRef = useRef(config);
-  configRef.current = config;
-  const isBotRunningRef = useRef(isBotRunning);
-  isBotRunningRef.current = isBotRunning;
+  const riskRef = useRef(new RiskManager(1000));
+  const wsRef = useRef<PocketSocketClient | null>(null);
+  const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  const runRef = useRef(running); runRef.current = running;
 
   useEffect(() => {
-    const initCandles: Record<PairSymbol, Candle[]> = { XAUUSD: [], EURUSD: [], AUDUSD: [], GBPUSD: [] };
-    const initDiag: Record<PairSymbol, SignalDiagnostics | null> = { XAUUSD: null, EURUSD: null, AUDUSD: null, GBPUSD: null };
-    const currentMinute = Math.floor(Date.now() / 60000) * 60;
-
-    ALL_PAIRS.forEach((pair) => {
-      let price = pair === 'XAUUSD' ? 2648.5 : pair === 'EURUSD' ? 1.0852 : pair === 'AUDUSD' ? 0.6584 : 1.2941;
-      const step = pair === 'XAUUSD' ? 0.85 : 0.00035;
-      const dec = pair === 'XAUUSD' ? 2 : 5;
-
+    const cMap: Record<PairSymbol, Candle[]> = { XAUUSD: [], EURUSD: [], AUDUSD: [], GBPUSD: [] };
+    const dMap: Record<PairSymbol, SignalDiagnostics | null> = { XAUUSD: null, EURUSD: null, AUDUSD: null, GBPUSD: null };
+    const nowMin = Math.floor(Date.now() / 60000) * 60;
+    PAIRS.forEach((p) => {
+      let px = p === 'XAUUSD' ? 2648.5 : p === 'EURUSD' ? 1.0852 : p === 'AUDUSD' ? 0.6584 : 1.2941;
+      const step = p === 'XAUUSD' ? 0.85 : 0.00035, dec = p === 'XAUUSD' ? 2 : 5;
       for (let i = 65; i >= 0; i--) {
-        const time = currentMinute - i * 60;
-        const open = price;
-        const close = Number((open + (Math.random() - 0.495) * step).toFixed(dec));
-        const high = Number((Math.max(open, close) + Math.random() * step * 0.6).toFixed(dec));
-        const low = Number((Math.min(open, close) - Math.random() * step * 0.6).toFixed(dec));
-        initCandles[pair].push({ time, open, high, low, close });
-        price = close;
+        const o = px, c = Number((o + (Math.random() - 0.495) * step).toFixed(dec));
+        const h = Number((Math.max(o, c) + Math.random() * step * 0.6).toFixed(dec));
+        const l = Number((Math.min(o, c) - Math.random() * step * 0.6).toFixed(dec));
+        cMap[p].push({ time: nowMin - i * 60, open: o, high: h, low: l, close: c });
+        px = c;
       }
-      initDiag[pair] = StrategyEngine.evaluate(pair, initCandles[pair]);
+      dMap[p] = StrategyEngine.evaluate(p, cMap[p]);
     });
-
-    setCandlesMap(initCandles);
-    setDiagnosticsMap(initDiag);
+    setCandles(cMap); setDiag(dMap);
   }, []);
 
-  useEffect(() => {
-    const socket = new PocketSocketClient(
-      (pair, price, timestamp, livePayout) => handleIncomingTick(pair, price, timestamp, livePayout),
-      (status) => setConnectionStatus(status)
-    );
-    socketClientRef.current = socket;
-    socket.connect(config.ssid, config.useSimulator);
-    return () => socket.disconnect();
-  }, []);
-
-  const handleIncomingTick = (pair: PairSymbol, price: number, timestamp: number, livePayout: number) => {
-    setPayouts((prev) => ({ ...prev, [pair]: livePayout }));
-    setCandlesMap((prev) => {
-      const list = prev[pair] ?? [];
-      if (list.length === 0) return prev;
-      const last = list[list.length - 1];
-      const candleMinute = Math.floor(timestamp / 60) * 60;
-
-      const updatedList =
-        candleMinute <= last.time
-          ? [...list.slice(0, -1), { ...last, high: Math.max(last.high, price), low: Math.min(last.low, price), close: price }]
-          : [...list.slice(-120), { time: candleMinute, open: last.close, high: price, low: price, close: price }];
-
-      const diag = StrategyEngine.evaluate(pair, updatedList);
-      setDiagnosticsMap((d) => ({ ...d, [pair]: diag }));
-
-      if (diag.signal && isBotRunningRef.current && candleMinute > last.time) {
-        executeSignal(pair, diag.signal, price, candleMinute, livePayout);
-      }
-      return { ...prev, [pair]: updatedList };
-    });
-  };
-
-  const executeSignal = async (pair: PairSymbol, direction: TradeDirection, price: number, candleTime: number, payout: number) => {
-    const riskCheck = riskManagerRef.current.canExecuteTrade(pair, payout, candleTime, configRef.current);
-    if (!riskCheck.allowed) return;
-
+  const execTrade = async (p: PairSymbol, dir: TradeDirection, px: number, cTime: number, pay: number) => {
+    const chk = riskRef.current.canExecuteTrade(p, pay, cTime, cfgRef.current);
+    if (!chk.allowed) return;
     try { await Haptics.impact({ style: ImpactStyle.Heavy }); } catch {}
-
-    const tradeId = `trade_${Date.now()}`;
-    const newTrade: TradeRecord = {
-      id: tradeId,
-      pair,
-      direction,
-      entryPrice: price,
-      stake: riskCheck.stake,
-      payoutPercent: payout,
-      entryTime: Date.now(),
-      expiryTime: Date.now() + configRef.current.expirySeconds * 1000,
-      status: 'ACTIVE',
-      profit: 0,
-    };
-
-    setTrades((prev) => [newTrade, ...prev]);
-    riskManagerRef.current.registerExecution(pair, candleTime);
-    setCooldownCountdown(configRef.current.cooldownCandles * 60);
-    socketClientRef.current?.executeOrder(pair, direction, riskCheck.stake, configRef.current.expirySeconds);
-
-    setTimeout(() => resolveTrade(tradeId, pair, direction, price, riskCheck.stake, payout), configRef.current.expirySeconds * 1000);
-  };
-
-  const handleManualExecute = (direction: TradeDirection) => {
-    const pair = config.selectedPair;
-    const list = candlesMap[pair];
-    executeSignal(pair, direction, list[list.length - 1]?.close ?? 1.0, Math.floor(Date.now() / 60000) * 60, payouts[pair]);
-  };
-
-  const handleSimulateSweep = (direction: TradeDirection) => {
-    const pair = config.selectedPair;
-    const list = candlesMap[pair];
-    if (list.length < 55) return;
-    const last = list[list.length - 1];
-    const step = pair === 'XAUUSD' ? 2.4 : 0.0012;
-    const dec = pair === 'XAUUSD' ? 2 : 5;
-
-    const swept: Candle =
-      direction === 'CALL'
-        ? { ...last, low: Number((last.close - step).toFixed(dec)), high: Number((last.close + step * 0.2).toFixed(dec)), close: Number((last.close + step * 0.05).toFixed(dec)) }
-        : { ...last, high: Number((last.close + step).toFixed(dec)), low: Number((last.close - step * 0.2).toFixed(dec)), close: Number((last.close - step * 0.05).toFixed(dec)) };
-
-    const updated = [...list.slice(0, -1), swept];
-    setCandlesMap((prev) => ({ ...prev, [pair]: updated }));
-    const diag = StrategyEngine.evaluate(pair, updated);
-    setDiagnosticsMap((prev) => ({
-      ...prev,
-      [pair]: {
-        ...diag,
-        signal: direction,
-        confluenceScore: 92,
-        checklist: { trendAligned: true, liquiditySweep: true, fvgImbalance: true, oteFibZone: true, rsiExhaustion: true, atrRegimeClean: true },
-        reason: `Institutional ${direction} Sweep Confirmed (92% Confluence)`,
-      },
-    }));
-    executeSignal(pair, direction, swept.close, swept.time, payouts[pair]);
-  };
-
-  const resolveTrade = (id: string, pair: PairSymbol, dir: TradeDirection, entryPrice: number, stake: number, payout: number) => {
-    setCandlesMap((latestMap) => {
-      const candles = latestMap[pair];
-      const currentPrice = candles[candles.length - 1]?.close ?? entryPrice;
-      const isWin = (dir === 'CALL' && currentPrice > entryPrice) || (dir === 'PUT' && currentPrice < entryPrice);
-      const finalStatus = isWin ? 'WIN' : currentPrice === entryPrice ? 'TIE' : 'LOSS';
-      const outcome: TradeRecord = {
-        id,
-        pair,
-        direction: dir,
-        entryPrice,
-        exitPrice: currentPrice,
-        stake,
-        payoutPercent: payout,
-        entryTime: Date.now() - configRef.current.expirySeconds * 1000,
-        expiryTime: Date.now(),
-        status: finalStatus,
-        profit: finalStatus === 'TIE' ? 0 : isWin ? stake * (payout / 100) : -stake,
-      };
-      riskManagerRef.current.recordOutcome(outcome);
-      setTrades((prev) => prev.map((t) => (t.id === id ? outcome : t)));
-      return latestMap;
-    });
+    const id = `t_${Date.now()}`, exp = cfgRef.current.expirySeconds * 1000;
+    setTrades((pr) => [{ id, pair: p, direction: dir, entryPrice: px, stake: chk.stake, payoutPercent: pay, entryTime: Date.now(), expiryTime: Date.now() + exp, status: 'ACTIVE', profit: 0 }, ...pr]);
+    riskRef.current.registerExecution(p, cTime);
+    setCooldown(cfgRef.current.cooldownCandles * 60);
+    wsRef.current?.executeOrder(p, dir, chk.stake, cfgRef.current.expirySeconds);
+    setTimeout(() => {
+      setCandles((lat) => {
+        const cur = lat[p][lat[p].length - 1]?.close ?? px;
+        const win = (dir === 'CALL' && cur > px) || (dir === 'PUT' && cur < px);
+        const st = win ? 'WIN' : cur === px ? 'TIE' : 'LOSS';
+        const out: TradeRecord = { id, pair: p, direction: dir, entryPrice: px, exitPrice: cur, stake: chk.stake, payoutPercent: pay, entryTime: Date.now() - exp, expiryTime: Date.now(), status: st, profit: st === 'TIE' ? 0 : win ? chk.stake * (pay / 100) : -chk.stake };
+        riskRef.current.recordOutcome(out);
+        setTrades((pr) => pr.map((t) => (t.id === id ? out : t)));
+        return lat;
+      });
+    }, exp);
   };
 
   useEffect(() => {
-    if (cooldownCountdown <= 0) return;
-    const timer = setInterval(() => setCooldownCountdown((p) => Math.max(0, p - 1)), 1000);
-    return () => clearInterval(timer);
-  }, [cooldownCountdown]);
+    const ws = new PocketSocketClient((p, px, ts, pay) => {
+      setPayouts((pr) => ({ ...pr, [p]: pay }));
+      setCandles((pr) => {
+        const list = pr[p] ?? [];
+        if (!list.length) return pr;
+        const last = list[list.length - 1], cMin = Math.floor(ts / 60) * 60;
+        const upd = cMin <= last.time
+          ? [...list.slice(0, -1), { ...last, high: Math.max(last.high, px), low: Math.min(last.low, px), close: px }]
+          : [...list.slice(-120), { time: cMin, open: last.close, high: px, low: px, close: px }];
+        const ev = StrategyEngine.evaluate(p, upd);
+        setDiag((d) => ({ ...d, [p]: ev }));
+        if (ev.signal && runRef.current && cMin > last.time) execTrade(p, ev.signal, px, cMin, pay);
+        return { ...pr, [p]: upd };
+      });
+    }, setStatus);
+    wsRef.current = ws;
+    ws.connect(cfg.ssid, cfg.useSimulator);
+    return () => ws.disconnect();
+  }, []);
 
-  const handleExportCSV = async () => {
-    const csv = 'ID,Pair,Direction,Stake,Payout%,Profit,Status,Timestamp\n' +
-      trades.map((t) => `${t.id},${t.pair},${t.direction},${t.stake},${t.payoutPercent},${t.profit},${t.status},${new Date(t.entryTime).toISOString()}`).join('\n');
-    try {
-      await Filesystem.writeFile({ path: `trades_${Date.now()}.csv`, data: csv, directory: Directory.Documents, encoding: Encoding.UTF8 });
-      alert('Trades CSV exported to Documents.');
-    } catch {}
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setInterval(() => setCooldown((c) => Math.max(0, c - 1)), 1000);
+    return () => clearInterval(t);
+  }, [cooldown]);
+
+  const onSimSweep = (dir: TradeDirection) => {
+    const p = cfg.selectedPair, list = candles[p];
+    if (list.length < 55) return;
+    const last = list[list.length - 1], step = p === 'XAUUSD' ? 2.4 : 0.0012, dec = p === 'XAUUSD' ? 2 : 5;
+    const sw: Candle = dir === 'CALL'
+      ? { ...last, low: Number((last.close - step).toFixed(dec)), close: Number((last.close + step * 0.05).toFixed(dec)) }
+      : { ...last, high: Number((last.close + step).toFixed(dec)), close: Number((last.close - step * 0.05).toFixed(dec)) };
+    const upd = [...list.slice(0, -1), sw];
+    setCandles((pr) => ({ ...pr, [p]: upd }));
+    setDiag((pr) => ({ ...pr, [p]: { ...StrategyEngine.evaluate(p, upd), signal: dir, confluenceScore: 92, checklist: { trendAligned: true, liquiditySweep: true, fvgImbalance: true, oteFibZone: true, rsiExhaustion: true, atrRegimeClean: true }, reason: `Institutional ${dir} Sweep Confirmed (92% Confluence)` } }));
+    execTrade(p, dir, sw.close, sw.time, payouts[p]);
   };
 
-  const activeTradeForPair = trades.find((t) => t.status === 'ACTIVE' && t.pair === config.selectedPair) ?? null;
+  const exportCSV = async () => {
+    const csv = 'ID,Pair,Dir,Stake,Payout,Profit,Status\n' + trades.map((t) => `${t.id},${t.pair},${t.direction},${t.stake},${t.payoutPercent},${t.profit},${t.status}`).join('\n');
+    try { await Filesystem.writeFile({ path: `trades_${Date.now()}.csv`, data: csv, directory: Directory.Documents, encoding: Encoding.UTF8 }); } catch {}
+  };
+
+  const activeTrade = trades.find((t) => t.status === 'ACTIVE' && t.pair === cfg.selectedPair) ?? null;
 
   return (
     <main className="max-w-md mx-auto min-h-screen flex flex-col px-3 pt-2.5 relative bg-obsidian-bg">
       <div className="flex-1">
-        {activeTab === 'terminal' && (
-          <TerminalTab
-            selectedPair={config.selectedPair}
-            onSelectPair={(p) => setConfig((prev) => ({ ...prev, selectedPair: p }))}
-            connectionStatus={connectionStatus}
-            isBotRunning={isBotRunning}
-            onToggleBot={() => setIsBotRunning(!isBotRunning)}
-            livePayout={payouts[config.selectedPair]}
-            candles={candlesMap[config.selectedPair]}
-            diagnostics={diagnosticsMap[config.selectedPair]}
-            cooldownRemainingSeconds={cooldownCountdown}
-            telemetry={riskManagerRef.current.getTelemetry()}
-            activeTrade={activeTradeForPair}
-            onManualExecute={handleManualExecute}
-            onSimulateSweep={handleSimulateSweep}
-          />
-        )}
-        {activeTab === 'risk' && (
-          <RiskHUDTab
-            telemetry={riskManagerRef.current.getTelemetry()}
-            riskPercent={config.riskPercent}
-            dailyStopLossPercent={config.dailyStopLossPercent}
-            dailyTakeProfitPercent={config.dailyTakeProfitPercent}
-          />
-        )}
-        {activeTab === 'history' && <TradeHistoryTab trades={trades} onExportCSV={handleExportCSV} />}
-        {activeTab === 'settings' && (
-          <SettingsTab
-            config={config}
-            onUpdateConfig={(c) => setConfig((prev) => ({ ...prev, ...c }))}
-
-
-            onReconnect={() => socketClientRef.current?.connect(config.ssid, config.useSimulator)}
-          />
-        )}
+        {tab === 'terminal' && <TerminalTab selectedPair={cfg.selectedPair} onSelectPair={(p) => setCfg((pr) => ({ ...pr, selectedPair: p }))} connectionStatus={status} isBotRunning={running} onToggleBot={() => setRunning(!running)} livePayout={payouts[cfg.selectedPair]} candles={candles[cfg.selectedPair]} diagnostics={diag[cfg.selectedPair]} cooldownRemainingSeconds={cooldown} telemetry={riskRef.current.getTelemetry()} activeTrade={activeTrade} onManualExecute={(dir) => execTrade(cfg.selectedPair, dir, candles[cfg.selectedPair].slice(-1)[0]?.close ?? 1, Math.floor(Date.now() / 60000) * 60, payouts[cfg.selectedPair])} onSimulateSweep={onSimSweep} />}
+        {tab === 'risk' && <RiskHUDTab telemetry={riskRef.current.getTelemetry()} riskPercent={cfg.riskPercent} dailyStopLossPercent={cfg.dailyStopLossPercent} dailyTakeProfitPercent={cfg.dailyTakeProfitPercent} />}
+        {tab === 'history' && <TradeHistoryTab trades={trades} onExportCSV={exportCSV} />}
+        {tab === 'settings' && <SettingsTab config={cfg} onUpdateConfig={(c) => setCfg((pr) => ({ ...pr, ...c }))} onReconnect={() => wsRef.current?.connect(cfg.ssid, cfg.useSimulator)} />}
       </div>
-
       <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-obsidian-surface/95 backdrop-blur-2xl border-t border-obsidian-border px-6 py-2.5 flex justify-between items-center z-50">
-        <button onClick={() => setActiveTab('terminal')} className={`flex flex-col items-center space-y-1 ${activeTab === 'terminal' ? 'text-neon-cyan' : 'text-slate-500'}`}>
-          <Terminal className="w-5 h-5" />
-          <span className="text-[10px] font-mono">TERMINAL</span>
-        </button>
-        <button onClick={() => setActiveTab('risk')} className={`flex flex-col items-center space-y-1 ${activeTab === 'risk' ? 'text-neon-cyan' : 'text-slate-500'}`}>
-          <Shield className="w-5 h-5" />
-          <span className="text-[10px] font-mono">RISK HUD</span>
-        </button>
-        <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center space-y-1 ${activeTab === 'history' ? 'text-neon-cyan' : 'text-slate-500'}`}>
-          <History className="w-5 h-5" />
-          <span className="text-[10px] font-mono">LEDGER</span>
-        </button>
-        <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center space-y-1 ${activeTab === 'settings' ? 'text-neon-cyan' : 'text-slate-500'}`}>
-          <Settings className="w-5 h-5" />
-          <span className="text-[10px] font-mono">SETTINGS</span>
-        </button>
+        {([['terminal', Terminal, 'TERMINAL'], ['risk', Shield, 'RISK HUD'], ['history', History, 'LEDGER'], ['settings', Settings, 'SETTINGS']] as const).map(([k, Icon, lbl]) => (
+          <button key={k} onClick={() => setTab(k)} className={`flex flex-col items-center space-y-1 ${tab === k ? 'text-neon-cyan' : 'text-slate-500'}`}>
+            <Icon className="w-5 h-5" /><span className="text-[10px] font-mono">{lbl}</span>
+          </button>
+        ))}
       </nav>
     </main>
   );
