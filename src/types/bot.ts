@@ -1,14 +1,23 @@
-export type PairSymbol = 'EURUSD' | 'AUDUSD' | 'GBPUSD';
+export type PairSymbol = 'XAUUSD' | 'EURUSD' | 'AUDUSD' | 'GBPUSD';
 export type TradeDirection = 'CALL' | 'PUT';
 export type TradeStatus = 'ACTIVE' | 'WIN' | 'LOSS' | 'TIE';
 export type SocketConnectionStatus = 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED' | 'SIMULATOR';
 
 export interface Candle {
-  time: number;
+  time: number; // Strictly 60s-aligned Unix timestamp in seconds
   open: number;
   high: number;
   low: number;
   close: number;
+}
+
+export interface ConfluenceChecklist {
+  trendAligned: boolean;
+  liquiditySweep: boolean;
+  fvgImbalance: boolean;
+  oteFibZone: boolean;
+  rsiExhaustion: boolean;
+  atrRegimeClean: boolean;
 }
 
 export interface SignalDiagnostics {
@@ -20,9 +29,13 @@ export interface SignalDiagnostics {
   bbLower: number;
   rsi7: number;
   atr14: number;
+  oteHigh: number;
+  oteLow: number;
   candleRange: number;
   lowerWickRatio: number;
   upperWickRatio: number;
+  confluenceScore: number; // 0 to 100
+  checklist: ConfluenceChecklist;
   atrSpikeBlocked: boolean;
   signal: TradeDirection | null;
   reason: string;
@@ -34,7 +47,7 @@ export interface BotConfig {
   useSimulator: boolean;
   activePairs: PairSymbol[];
   selectedPair: PairSymbol;
-  expirySeconds: 120 | 180;
+  expirySeconds: 60 | 120 | 180;
   riskPercent: number;
   fixedStakeFallback: number;
   minPayoutPercent: number;

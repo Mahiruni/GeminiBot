@@ -13,6 +13,13 @@ export class PocketSocketClient {
   private currentSsid = '';
   private isSimulating = false;
 
+  private simPrices: Record<PairSymbol, number> = {
+    XAUUSD: 2648.50,
+    EURUSD: 1.08520,
+    AUDUSD: 0.65840,
+    GBPUSD: 1.29410,
+  };
+
   private endpoint = 'wss://demo-api-eu.po.market/socket.io/?EIO=4&transport=websocket';
 
   constructor(onTick: TickHandler, onStatus: StatusHandler) {
@@ -43,7 +50,7 @@ export class PocketSocketClient {
             ? ssid
             : `42["auth",{"session":"${ssid}","isDemo":1}]`;
           this.ws?.send(authPayload);
-          this.subscribePairs(['EURUSD', 'AUDUSD', 'GBPUSD']);
+          this.subscribePairs(['XAUUSD', 'EURUSD', 'AUDUSD', 'GBPUSD']);
         }, 500);
       };
 
@@ -86,14 +93,12 @@ export class PocketSocketClient {
       if (event === 'updateStream' && Array.isArray(payload)) {
         for (const item of payload) {
           const [asset, time, price] = item;
-          if (['EURUSD', 'AUDUSD', 'GBPUSD'].includes(asset)) {
-            this.onTick(asset as PairSymbol, Number(price), Number(time), 86);
+          if (['XAUUSD', 'EURUSD', 'AUDUSD', 'GBPUSD'].includes(asset)) {
+            this.onTick(asset as PairSymbol, Number(price), Number(time), 88);
           }
         }
       }
-    } catch {
-      // Ignore non-JSON frames
-    }
+    } catch {}
   }
 
   public executeOrder(
@@ -120,21 +125,18 @@ export class PocketSocketClient {
 
   private startSimulator() {
     this.onStatus('SIMULATOR');
-    const basePrices: Record<PairSymbol, number> = {
-      EURUSD: 1.085,
-      AUDUSD: 0.658,
-      GBPUSD: 1.294,
-    };
 
     this.simTimer = setInterval(() => {
       const now = Math.floor(Date.now() / 1000);
-      (['EURUSD', 'AUDUSD', 'GBPUSD'] as PairSymbol[]).forEach((pair) => {
-        const volatility = (Math.random() - 0.499) * 0.00015;
-        basePrices[pair] = Number((basePrices[pair] + volatility).toFixed(5));
-        const dynamicPayout = Math.random() > 0.08 ? 86 : 80;
-        this.onTick(pair, basePrices[pair], now, dynamicPayout);
+      (['XAUUSD', 'EURUSD', 'AUDUSD', 'GBPUSD'] as PairSymbol[]).forEach((pair) => {
+        const step = pair === 'XAUUSD' ? 0.35 : 0.00018;
+        const meanRevert = (Math.random() - 0.498) * step;
+        const decimals = pair === 'XAUUSD' ? 2 : 5;
+        this.simPrices[pair] = Number((this.simPrices[pair] + meanRevert).toFixed(decimals));
+        const payout = pair === 'XAUUSD' ? 92 : 88;
+        this.onTick(pair, this.simPrices[pair], now, payout);
       });
-    }, 1000);
+    }, 800);
   }
 
   public disconnect() {
