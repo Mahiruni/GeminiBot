@@ -1,0 +1,12 @@
+{
+  "appId": "com.quant.obsidian",
+  "appName": "Obsidian Quant",
+  "webDir": "out",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
